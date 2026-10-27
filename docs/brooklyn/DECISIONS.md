@@ -26,6 +26,8 @@ Update this file at the end of every phase. Mark anything not tested as **unveri
 | 18 | Docs: CLAUDE.md, PLAN.md, ARCHITECTURE.md, DECISIONS.md, SECURITY.md, AGENT-SPEC.md. No DEMO.md. |
 | 19 | No dates in the plan. Aswin manages the schedule. |
 | 20 | Groups: keep OpenBot's "one thread per Bot plus shared transcript" design. |
+| 21 | O1 resolved: WSL2, repo cloned fresh inside the WSL filesystem (`~/brooklyn` in the `Ubuntu` distro), not under `/mnt/c`. The OneDrive Windows copy is retired; all Phase 0+ work runs from the WSL clone. **Deviation from the proposed default:** Docker runs as a native Docker Engine installed directly inside the `Ubuntu` distro (`apt install docker.io docker-compose-v2`), not via Docker Desktop's WSL integration — Aswin's call, to skip the Docker Desktop Settings GUI step. Docker Desktop is still installed and can run alongside (separate daemon, no conflict observed). |
+| 22 | O2 resolved: skip the hosted-Intelligence baseline run. Aswin: "Phase 2 is judged by the written contract and tests." |
 
 ## Decided (by the research)
 
@@ -42,8 +44,6 @@ Update this file at the end of every phase. Mark anything not tested as **unveri
 
 | # | Question | Decide in |
 |---|---|---|
-| O1 | WSL2 or native Windows for running the stack. Default: WSL2 + Docker Desktop, repo inside WSL. | Phase 0 |
-| O2 | Run one baseline on the free hosted Intelligence plan, or skip. | Phase 0 |
 | O3 | Env name for the new mode. Proposed: `THREAD_BACKEND=postgres`. | Phase 1 |
 | O4 | Save run events only at run end, or flush during the run (crash safety). | Phase 2 |
 | O5 | Embeddings: small local open-source model, or Postgres full-text search. Not tested on the 16 GB laptop. | Phase 5 |
@@ -64,10 +64,11 @@ Update this file at the end of every phase. Mark anything not tested as **unveri
 | Alpha base | OpenBot is alpha. Do not pull upstream mid-swap. |
 | Free CopilotKit plan | Non-production only, 1,000 interactions per month. Only matters if we use the hosted baseline in Phase 0. |
 | Browser app in new mode | Untested until Phase 4. |
-| Windows Docker socket | The supervisor needs it. Untested until Phase 0. |
+| Windows Docker socket | The supervisor needs it. The native-in-WSL Docker Engine works for Postgres; the supervisor's own socket access is still untested (first exercised when `supervisor` itself runs, later phase). |
+| WSL distro idle shutdown | A WSL distro instance (not just the outer VM) powers off ~15-30s after the last attached process exits, killing any running containers with it. `vmIdleTimeout=-1` in `.wslconfig` does **not** fix this (it only governs the outer VM). Workaround: keep one long-lived process attached to the distro (e.g. `wsl -d Ubuntu -- bash -lc 'tail -f /dev/null'` running in the background) for the whole duration anything inside WSL needs to stay up. Matters for every later phase that drives the stack from short-lived shell invocations. |
 
 ## Phase log
 
 Add one line per finished phase: date, phase, what changed, test results, anything surprising.
 
-- Phase 0: pending.
+- Phase 0 (2026-10-27): Fork bookkeeping done — tag `base-ef13020` and branch `brooklyn-base` at commit `ef13020`, pushed to `origin`; `upstream` remote added (`CopilotKit/OpenBot`, push disabled). Repo re-cloned fresh into `~/brooklyn` inside WSL2 (`Ubuntu` distro); the OneDrive Windows copy is retired. Bun installed and pinned to `1.4.3` (matches `packageManager` in `package.json`). `bun install`: 1181 packages, clean. `typecheck`: green across all 5 workspaces. `lint` (biome, `--error-on-warnings`): green, 1635 files. `test` baseline (before Postgres was up): 6506 pass, 142 fail, 81 skip, 131 errors, 6729 tests across 722 files in 232s — failures traced to missing `TEST_DATABASE_URL`/Postgres, no Docker on `agent-computer`'s subprocess `$PATH` at that point, a few optional-workspace deps not installed (`web-bot-auth`, `@ag-ui/core`, `@langchain/anthropic`, desktop/Tauri deps), and live-network/credentialed tests — none are regressions, all pre-existing environment gaps. Docker: installed natively inside WSL (`docker.io` + `docker-compose-v2`), not via Docker Desktop's WSL integration (see decision #21). `docker compose up -d postgres` then `docker compose run --rm migrate`: succeeded, 92 tables confirmed in the `openbot` database. `gh` CLI installed (winget) and authenticated as `codaswin`. Surprising: a WSL distro instance fully powers off between separate short-lived command invocations unless something stays attached — see the new risk row above.

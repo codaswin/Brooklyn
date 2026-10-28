@@ -66,3 +66,43 @@ export type ThreadLock = {
   /** Give it back, so the next run does not wait out the whole expiry. */
   release: (input: { threadId: string; runId: string }) => Promise<void>;
 };
+
+/**
+ * A thread's messages, in the platform's own shape.
+ *
+ * Matches `IntelligenceLike`'s `ThreadHistoryMessage` in `run-turn.ts`, restated here for the same
+ * reason that one is restated: not exported by the SDK.
+ */
+export type ThreadBackendMessage = {
+  id: string;
+  role: string;
+  content?: unknown;
+  activityType?: string;
+  toolCalls?: { id: string; name: string; args: string }[];
+  toolCallId?: string;
+};
+
+/**
+ * Where a conversation lives without Intelligence (Phase 2: docs/brooklyn/PLAN.md).
+ *
+ * {@link ThreadLock} plus the thread-reading shape `IntelligenceLike` already has, minus its
+ * `ɵ`-prefixed lock methods: `ThreadLock`'s clean names are the replacement for those, not a second
+ * lock sitting beside them.
+ */
+export type ThreadBackend = ThreadLock & {
+  /** Idempotent: a second call for the same thread id is a no-op, not an error. */
+  getOrCreateThread: (input: {
+    threadId: string;
+    userId: string;
+    agentId: string;
+  }) => Promise<void>;
+  /** Nothing for a thread that doesn't exist or belongs to a different user. Never throws for that. */
+  getThread: (input: {
+    threadId: string;
+    userId: string;
+  }) => Promise<{ id: string; userId: string; agentId: string } | undefined>;
+  getThreadMessages: (input: {
+    threadId: string;
+    userId: string;
+  }) => Promise<{ messages: ThreadBackendMessage[] }>;
+};

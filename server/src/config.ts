@@ -20,11 +20,21 @@ import type { BrokerProvider } from "./plugins/access";
 import { type VoiceConfig, voiceConfig } from "./voice/config";
 import { type WebBotAuth, webBotAuthFromEnv } from "./web-bot-auth";
 
-export type RuntimeCapabilities = {
-  mode: "intelligence";
-  durableHistory: true;
-  intelligence: IntelligenceSettings;
-};
+export type RuntimeCapabilities =
+  | {
+      mode: "intelligence";
+      durableHistory: true;
+      intelligence: IntelligenceSettings;
+    }
+  | {
+      /**
+       * No CopilotKit Intelligence. The runtime runs on an in-process runner instead (Phase 1: the
+       * SDK's own `InMemoryAgentRunner`, so history does not survive a restart; Phase 2 swaps that
+       * for a Postgres-backed one). See docs/brooklyn/PLAN.md.
+       */
+      mode: "postgres";
+      durableHistory: false;
+    };
 
 /**
  * The Intelligence contract. Three values are required; see runtimeCapabilities.
@@ -956,6 +966,32 @@ function oktaAuth(
 }
 
 /**
+ * Resolve the boot-gate mode, or refuse to start.
+ *
+ * THREAD_BACKEND=postgres is the only way out of the Intelligence requirement below (Brooklyn's
+ * swap, Phase 1: docs/brooklyn/PLAN.md). Unset, or explicitly "intelligence", keeps today's
+ * behaviour exactly. Anything else is a typo somebody will not notice unless it fails loudly here,
+ * so it throws naming the bad value rather than silently falling through to either mode.
+ */
+function runtimeCapabilities(environment: Environment): RuntimeCapabilities {
+  const threadBackend = optional(environment, "THREAD_BACKEND");
+  if (
+    threadBackend !== undefined &&
+    threadBackend !== "intelligence" &&
+    threadBackend !== "postgres"
+  ) {
+    throw new Error(
+      `THREAD_BACKEND must be "postgres" or "intelligence" if set. Got: "${threadBackend}".`,
+    );
+  }
+  if (threadBackend === "postgres") {
+    return { mode: "postgres", durableHistory: false };
+  }
+
+  return intelligenceCapabilities(environment);
+}
+
+/**
  * Resolve the Intelligence contract, or refuse to start.
  *
  * The three addressing values are required together. A partial set is the more dangerous shape than
@@ -968,7 +1004,9 @@ function oktaAuth(
  * for a token the platform had stopped handing out. It is still read and still forwarded when a
  * deployment sets one, which is what a self-hosted Intelligence with its own licence needs.
  */
-function runtimeCapabilities(environment: Environment): RuntimeCapabilities {
+function intelligenceCapabilities(
+  environment: Environment,
+): RuntimeCapabilities {
   const settings = {
     apiUrl: url(environment, "INTELLIGENCE_API_URL"),
     gatewayWsUrl: url(environment, "INTELLIGENCE_GATEWAY_WS_URL"),

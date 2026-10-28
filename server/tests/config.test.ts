@@ -50,6 +50,63 @@ const {
   ...withoutSignIn
 } = baseEnvironment;
 
+/** `baseEnvironment`, minus the three Intelligence variables: the postgres-mode starting point. */
+const {
+  INTELLIGENCE_API_URL: _intelligenceApiUrl,
+  INTELLIGENCE_GATEWAY_WS_URL: _intelligenceGatewayWsUrl,
+  INTELLIGENCE_API_KEY: _intelligenceApiKey,
+  COPILOTKIT_LICENSE_TOKEN: _licenseToken,
+  ...withoutIntelligence
+} = baseEnvironment;
+const postgresEnvironment = { ...withoutIntelligence, THREAD_BACKEND: "postgres" };
+
+/**
+ * THREAD_BACKEND=postgres: the boot gate Phase 1 adds. See docs/brooklyn/DECISIONS.md #23.
+ *
+ * Unset or "intelligence" must keep today's exact behaviour (including the partial-set refusal
+ * tested below), and any other value must throw a clear error naming it — never a silent
+ * fallthrough to either mode.
+ */
+describe("THREAD_BACKEND", () => {
+  test("boots in postgres mode when THREAD_BACKEND=postgres and no Intelligence variable is set", () => {
+    const config = loadConfig(postgresEnvironment);
+
+    expect(config.runtime).toEqual({ mode: "postgres", durableHistory: false });
+  });
+
+  test("keeps today's Intelligence requirement when THREAD_BACKEND is unset", () => {
+    const environment: Record<string, string | undefined> = {
+      ...postgresEnvironment,
+    };
+    delete environment.THREAD_BACKEND;
+
+    expect(() => loadConfig(environment)).toThrow(
+      "CopilotKit Intelligence is required and is not configured",
+    );
+  });
+
+  test("keeps today's Intelligence requirement when THREAD_BACKEND=intelligence", () => {
+    expect(() =>
+      loadConfig({ ...postgresEnvironment, THREAD_BACKEND: "intelligence" }),
+    ).toThrow("CopilotKit Intelligence is required and is not configured");
+  });
+
+  test("still boots in Intelligence mode when THREAD_BACKEND=intelligence and the three variables are set", () => {
+    const config = loadConfig({
+      ...baseEnvironment,
+      THREAD_BACKEND: "intelligence",
+    });
+
+    expect(config.runtime.mode).toBe("intelligence");
+  });
+
+  test("throws a clear error naming the value, for any THREAD_BACKEND other than postgres or intelligence", () => {
+    expect(() =>
+      loadConfig({ ...postgresEnvironment, THREAD_BACKEND: "sqlite" }),
+    ).toThrow('THREAD_BACKEND must be "postgres" or "intelligence" if set. Got: "sqlite".');
+  });
+});
+
 describe("deployment configuration", () => {
   test("organization authority disables the standalone actor without requiring local provider secrets", () => {
     const config = loadConfig({
@@ -60,6 +117,9 @@ describe("deployment configuration", () => {
     expect(config.singleUser).toBe(false);
     expect(config.auth).toBeUndefined();
     expect(config.organizationAuthUrl).toBe("https://openbot.company.example");
+    if (config.runtime.mode !== "intelligence") {
+      throw new Error("expected the Intelligence runtime");
+    }
     expect(config.runtime.intelligence.apiKey).toBe("tenant-api-key");
   });
   test("resolves the Intelligence runtime, which is the only runtime", () => {

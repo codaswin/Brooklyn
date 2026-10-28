@@ -4,6 +4,7 @@ import type { BuiltInAgentConfiguration } from "@copilotkit/runtime/v2";
 import {
   type CopilotKitIntelligence,
   CopilotRuntime,
+  InMemoryAgentRunner,
 } from "@copilotkit/runtime/v2";
 import { createCopilotHonoHandler } from "@copilotkit/runtime/v2/hono";
 import { PROVENANCE_GUIDANCE } from "@openbot/shared/bot-prompt";
@@ -21,6 +22,7 @@ import { parametersFor } from "@openbot/toolkit/granted-tool";
 import { HeadlessToolsMiddleware } from "@openbot/toolkit/headless-tools";
 import { sanitizeSeededHistory } from "@openbot/toolkit/history-sanitize";
 import { executeNativeApprovalTool } from "@openbot/toolkit/native-approval";
+import type { ThreadLock } from "@openbot/toolkit/ports";
 import { historyOrEmpty } from "@openbot/toolkit/thread-history";
 import { defer, from, switchMap } from "rxjs";
 import { z } from "zod";
@@ -86,6 +88,49 @@ import { UNTRUSTED_GUIDANCE } from "./untrusted-content";
 export type IdentifyUser = (
   request: Request,
 ) => Promise<{ id: string; name: string }>;
+
+/**
+ * A thread's messages, in the platform's own shape rather than AG-UI's: the two are compatible
+ * where it matters, and naming the wrong one would mean converting a history that does not need
+ * converting.
+ */
+type ThreadMessages = Awaited<
+  ReturnType<CopilotKitIntelligence["getThreadMessages"]>
+>["messages"];
+
+/**
+ * What `mountCopilotRuntime` hands back, the same shape in both modes.
+ *
+ * Named explicitly rather than inferred so postgres mode's stand-ins (runnerConnection, threadLock,
+ * history — nothing calls them; routines and hand-offs are guarded off entirely until a real
+ * ThreadBackend exists, Phase 2/3) type-check against the exact same contract intelligence mode's
+ * callers already rely on, instead of silently becoming a union those callers would have to narrow.
+ */
+export type CopilotRuntimeMount = {
+  handler: ReturnType<typeof createCopilotHonoHandler>;
+  learning: LearningRuntime | undefined;
+  /**
+   * How to reach the platform's runner, exactly as the runtime reaches it.
+   *
+   * TAKEN FROM THE CLIENT, NOT FROM CONFIGURATION, and this is the whole of a bug that only a real
+   * gateway could show. Built from `gatewayWsUrl` and the deployment's API key, every join was
+   * refused with `active_lock_mismatch`: a thread's active run is a lock the platform issues, and
+   * the token that holds it is not the API key. The runtime asks the client for both, so anything
+   * else driving a run has to ask the same client the same way.
+   */
+  runnerConnection: () => { url: string; authToken: string };
+  threadLock: ThreadLock;
+  agentFor: (input: {
+    actor: AgentActor;
+    botId: string;
+    initiator?: AuditInitiator;
+  }) => Promise<AbstractAgent | null>;
+  /** A thread's messages, as the platform holds them. */
+  history: (input: {
+    threadId: string;
+    actorId: string;
+  }) => Promise<ThreadMessages>;
+};
 
 type RegisteredBuiltInAgent = {
   id: string;
@@ -1702,8 +1747,7 @@ export function mountCopilotRuntime(
     onRunBusy?: (input: { threadId: string; busy: boolean }) => void;
     learningSettings?: LearningSettingsStore;
   } = {},
-) {
-  const { intelligence } = config.runtime;
+): CopilotRuntimeMount {
   const { basePath = "/api/copilotkit", onRunBusy, learningSettings } = options;
 
   /**
@@ -1738,6 +1782,51 @@ export function mountCopilotRuntime(
       throw error;
     }
   };
+
+  if (config.runtime.mode === "postgres") {
+    /*
+     * No Intelligence gateway to drive the chat through: the runtime runs on the SDK's own
+     * InMemoryAgentRunner instead (Phase 1; Phase 2 swaps it for a Postgres-backed one). Not
+     * passing `channels` or the learning hook here is deliberate — the runtime throws if either is
+     * set without `intelligence`.
+     */
+    const runtime = new CopilotRuntime({
+      identifyUser,
+      runner: new InMemoryAgentRunner(),
+      telemetryProperties: {
+        ...(config.accessibility ? { accessibility_title: "OpenBot" } : {}),
+        ...desktopTelemetryProperties(),
+      },
+      ...(config.generativeUi ? { openGenerativeUI: true } : {}),
+      a2ui: { enabled: config.generativeUi },
+      agents: createRequestAgents(identifyActor, resolver) as never,
+    });
+    /*
+     * routines and hand-offs never call these in postgres mode — both are guarded off entirely
+     * (index.ts, handoff-wiring.ts) until a real ThreadBackend exists. Thrown rather than faked, so
+     * a guard that slips would fail loudly instead of acting on made-up history or a lock nobody
+     * holds.
+     */
+    const notWiredUpYet = (): never => {
+      throw new Error(
+        "Routines and hand-offs are not wired up in postgres mode yet (Phase 1) — see docs/brooklyn/PLAN.md.",
+      );
+    };
+    return {
+      handler: createCopilotHonoHandler({ runtime, basePath }),
+      learning: undefined,
+      runnerConnection: notWiredUpYet,
+      threadLock: {
+        acquire: notWiredUpYet,
+        renew: notWiredUpYet,
+        release: notWiredUpYet,
+      },
+      agentFor,
+      history: notWiredUpYet,
+    };
+  }
+
+  const { intelligence } = config.runtime;
 
   /*
    * One client, used by the runtime and by anything reading a thread beside it, so a hop reads the

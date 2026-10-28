@@ -16,6 +16,27 @@ describe("health endpoint", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ status: "ok" });
   });
+
+  // Phase 1's literal boot criterion (PLAN.md): the new mode has to actually serve requests, not
+  // just compile. No real server boot needed — createApp is enough to exercise the postgres branch.
+  test("reports the server as healthy in postgres mode, with no Intelligence variable set", async () => {
+    const postgresApp = createApp(
+      loadConfig(
+        testEnvironment({
+          THREAD_BACKEND: "postgres",
+          INTELLIGENCE_API_URL: undefined,
+          INTELLIGENCE_GATEWAY_WS_URL: undefined,
+          INTELLIGENCE_API_KEY: undefined,
+          COPILOTKIT_LICENSE_TOKEN: undefined,
+        }),
+      ),
+    );
+
+    const response = await postgresApp.request("http://openbot.local/health");
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ status: "ok" });
+  });
 });
 
 describe("runtime capabilities", () => {

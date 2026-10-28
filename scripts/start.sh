@@ -409,10 +409,12 @@ INFO="$(curl -fsS --max-time 8 "http://localhost:$SERVER_PORT/api/copilotkit/inf
 # started.
 bun run - "$INFO" <<'JS'
 const info = JSON.parse(process.argv[2]);
-const status = info.licenseStatus;
 const agents = Object.keys(info.agents ?? {});
-if (status !== "valid") {
-  console.log(`\x1b[31m  licence is '${status}', not 'valid'.\x1b[0m`);
+// The SDK only includes licenseStatus for an Intelligence runtime (postgres mode has no licence to
+// report at all -- see @copilotkit/runtime's get-runtime-info.mjs). Absent means postgres mode, not
+// a failed check.
+if ("licenseStatus" in info && info.licenseStatus !== "valid") {
+  console.log(`\x1b[31m  licence is '${info.licenseStatus}', not 'valid'.\x1b[0m`);
   console.log("\x1b[31m  Check INTELLIGENCE_API_KEY: npx copilotkit@latest login && npx copilotkit@latest project select\x1b[0m");
   console.log("\x1b[31m  See README.md for Intelligence setup.\x1b[0m");
   process.exit(1);
@@ -421,7 +423,11 @@ if (agents.length === 0) {
   console.log("\x1b[31m  No Bots registered.\x1b[0m");
   process.exit(1);
 }
-console.log(`\x1b[32m  licence valid · mode ${info.mode} · Bots: ${agents.join(", ")}\x1b[0m`);
+console.log(
+  "licenseStatus" in info
+    ? `\x1b[32m  licence valid · mode ${info.mode} · Bots: ${agents.join(", ")}\x1b[0m`
+    : `\x1b[32m  postgres mode (no Intelligence licence) · Bots: ${agents.join(", ")}\x1b[0m`,
+);
 JS
 
 info "4/4  App"

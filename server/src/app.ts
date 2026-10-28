@@ -1919,17 +1919,17 @@ export function createApp(
     );
   }
 
-  if (threadIdentity) {
+  // No ThreadBackend yet in postgres mode (Phase 2: docs/brooklyn/PLAN.md), so this route is
+  // guarded off there for now rather than built on a stand-in reader — the same choice Phase 1
+  // makes for routines and hand-offs. config.ts still refuses to boot without the full Intelligence
+  // contract whenever intelligence mode is the one in effect, so `config.runtime.intelligence` is
+  // never missing in that branch.
+  if (threadIdentity && config.runtime.mode === "intelligence") {
     app.route(
       "/api/threads",
       createThreadRoutes(
         threadIdentity,
         requireUser,
-        // config.ts refuses to boot without the full Intelligence contract (see copilot.ts's
-        // header comment), so `config.runtime.intelligence` is never missing here. Built from it
-        // rather than assumed, though: this is the one place besides the runtime mount itself that
-        // needs to reach Intelligence, and it should keep working unmodified if that guarantee ever
-        // loosens and a deployment can legitimately have no reader to build.
         createThreadReader(
           createIntelligenceClient(config.runtime.intelligence),
         ),

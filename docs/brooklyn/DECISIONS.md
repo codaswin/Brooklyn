@@ -28,6 +28,7 @@ Update this file at the end of every phase. Mark anything not tested as **unveri
 | 20 | Groups: keep OpenBot's "one thread per Bot plus shared transcript" design. |
 | 21 | O1 resolved: WSL2, repo cloned fresh inside the WSL filesystem (`~/brooklyn` in the `Ubuntu` distro), not under `/mnt/c`. The OneDrive Windows copy is retired; all Phase 0+ work runs from the WSL clone. **Deviation from the proposed default:** Docker runs as a native Docker Engine installed directly inside the `Ubuntu` distro (`apt install docker.io docker-compose-v2`), not via Docker Desktop's WSL integration — Aswin's call, to skip the Docker Desktop Settings GUI step. Docker Desktop is still installed and can run alongside (separate daemon, no conflict observed). |
 | 22 | O2 resolved: skip the hosted-Intelligence baseline run. Aswin: "Phase 2 is judged by the written contract and tests." |
+| 23 | O3 resolved: `THREAD_BACKEND=postgres` locks in the new boot mode. Unset or `THREAD_BACKEND=intelligence` keeps today's behaviour (all 3 `INTELLIGENCE_*` vars required, partial set still errors). Any other value throws a clear boot error naming the bad value — no silent fallthrough. `.env.example` flips to ship postgres mode by default (the 3 `INTELLIGENCE_*` lines commented out, `THREAD_BACKEND=postgres` added); intelligence mode still works when someone explicitly configures it. |
 
 ## Decided (by the research)
 
@@ -44,7 +45,6 @@ Update this file at the end of every phase. Mark anything not tested as **unveri
 
 | # | Question | Decide in |
 |---|---|---|
-| O3 | Env name for the new mode. Proposed: `THREAD_BACKEND=postgres`. | Phase 1 |
 | O4 | Save run events only at run end, or flush during the run (crash safety). | Phase 2 |
 | O5 | Embeddings: small local open-source model, or Postgres full-text search. Not tested on the 16 GB laptop. | Phase 5 |
 | O6 | Analyzer spend cap and schedule for Learning. | Phase 6 |

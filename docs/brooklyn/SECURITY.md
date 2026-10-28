@@ -23,7 +23,7 @@ What this means:
 - On any shared server: any signed-in user could read or run on another user's thread.
 
 Rules:
-1. **Never** mark the runner as supporting local thread endpoints (`ɵsupportsLocalThreadEndpoints`). Then those routes answer 422.
+1. **Never** mark the runner as supporting local thread endpoints (`supportsLocalThreadEndpoints`, exported plainly — not `ɵ`-prefixed, verified against the installed `@copilotkit/runtime@1.77.0`). Then those routes answer 422.
 2. Our own routes (for example `server/src/channels/thread-routes.ts`) always check the owner.
 3. Phase 8 adds a guard before the Copilot handler is mounted (`server/src/app.ts` near line 1367) and an **isolation test**: user A cannot connect to, run on, or read user B's thread.
 4. Until Phase 8 passes, nobody else gets access.

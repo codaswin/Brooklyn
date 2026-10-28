@@ -29,6 +29,8 @@ Update this file at the end of every phase. Mark anything not tested as **unveri
 | 21 | O1 resolved: WSL2, repo cloned fresh inside the WSL filesystem (`~/brooklyn` in the `Ubuntu` distro), not under `/mnt/c`. The OneDrive Windows copy is retired; all Phase 0+ work runs from the WSL clone. **Deviation from the proposed default:** Docker runs as a native Docker Engine installed directly inside the `Ubuntu` distro (`apt install docker.io docker-compose-v2`), not via Docker Desktop's WSL integration — Aswin's call, to skip the Docker Desktop Settings GUI step. Docker Desktop is still installed and can run alongside (separate daemon, no conflict observed). |
 | 22 | O2 resolved: skip the hosted-Intelligence baseline run. Aswin: "Phase 2 is judged by the written contract and tests." |
 | 23 | O3 resolved: `THREAD_BACKEND=postgres` locks in the new boot mode. Unset or `THREAD_BACKEND=intelligence` keeps today's behaviour (all 3 `INTELLIGENCE_*` vars required, partial set still errors). Any other value throws a clear boot error naming the bad value — no silent fallthrough. `.env.example` flips to ship postgres mode by default (the 3 `INTELLIGENCE_*` lines commented out, `THREAD_BACKEND=postgres` added); intelligence mode still works when someone explicitly configures it. |
+| 24 | O4 resolved: `PostgresAgentRunner` saves events only at run end, matching the SDK's own `InMemoryAgentRunner` template exactly. A crash mid-run loses that one run's reply (the thread reverts to its state before that run started, and its lock expires cleanly so a retry can start fresh); every *completed* run survives a restart. All saving is routed through one function, so flushing incrementally can be added later without restructuring the runner. A lock heartbeat renews the lease partway through its TTL so a long-running turn doesn't lose its lock mid-run — with its own test. **Revisit before Phase 9**: LinkedIn research/writing turns may run long enough that end-of-run-only saving loses more than a quick chat reply would. |
+| 25 | `connect()`/`getThreadMessages()` load and compact a thread's entire run history, no cap — unlike the in-memory runner's `maxRunsPerThread` eviction, since Postgres doesn't need the same memory safety valve. A very long-lived thread could someday make replay slow; a warning is logged when one thread's replay crosses a size threshold, so this surfaces before it's a real problem rather than staying silently assumed. Revisit with real pagination if that warning ever actually fires. |
 
 ## Decided (by the research)
 
@@ -45,7 +47,6 @@ Update this file at the end of every phase. Mark anything not tested as **unveri
 
 | # | Question | Decide in |
 |---|---|---|
-| O4 | Save run events only at run end, or flush during the run (crash safety). | Phase 2 |
 | O5 | Embeddings: small local open-source model, or Postgres full-text search. Not tested on the 16 GB laptop. | Phase 5 |
 | O6 | Analyzer spend cap and schedule for Learning. | Phase 6 |
 | O7 | How Content_Mind reaches the Bots: copy/sync, mounted folder, or MCP. | Phase 9 |

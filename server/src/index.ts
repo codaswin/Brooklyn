@@ -711,7 +711,9 @@ const routineIntelligence = observeIntelligenceAuthentication(
       : {
           apiUrl: "http://postgres-mode.invalid",
           wsUrl: "ws://postgres-mode.invalid",
-          apiKey: "",
+          // The SDK's own constructor refuses a blank apiKey (assertConfiguredApiKey), so this
+          // has to be non-blank even though nothing ever dials out with it.
+          apiKey: "postgres-mode-placeholder",
         },
   ),
 );
@@ -2265,7 +2267,15 @@ const personResponseSweep = repeatAfterEach(
  */
 let workOfferedListener: WorkOfferedListener | undefined;
 
-if (config.handoff.maxDepth > 0 && config.handoff.maxPerRun > 0) {
+// No ThreadBackend yet in postgres mode (Phase 2/3), so hand-offs are guarded off entirely there
+// -- same choice as routines (createRoutineRunner) and the thread-reader route (app.ts). Eager,
+// not lazy: startHandoffDelivery calls copilotRuntime.runnerConnection() during its own setup, so
+// this has to gate the call itself, not just what happens if a hand-off is ever attempted.
+if (
+  config.runtime.mode === "intelligence" &&
+  config.handoff.maxDepth > 0 &&
+  config.handoff.maxPerRun > 0
+) {
   workOfferedListener = await startHandoffDelivery({
     config,
     database,

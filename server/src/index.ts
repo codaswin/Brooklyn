@@ -5,7 +5,12 @@ import {
 } from "@copilotkit/runtime/v2";
 import { COMPUTER_GUIDANCE } from "@openbot/shared/bot-prompt";
 import { workOwner } from "@openbot/shared/work-owner";
-import { createTurnRunner } from "@openbot/toolkit/run-turn";
+import type { ThreadBackend } from "@openbot/toolkit/ports";
+import {
+  createTurnRunner,
+  type IntelligenceLike,
+  type RunnerLike,
+} from "@openbot/toolkit/run-turn";
 import { and, eq, isNull, ne, sql } from "drizzle-orm";
 import { z } from "zod";
 import { createActivityStore } from "./activity/activity";
@@ -206,6 +211,8 @@ import {
   storedProvider,
 } from "./plugins/provider-wiring";
 import { createPluginStore } from "./plugins/store";
+import { PostgresAgentRunner } from "./postgres-agent-runner";
+import { createPostgresThreadBackend } from "./postgres-thread-backend";
 import {
   grantedSkills,
   grantedTools,
@@ -1682,13 +1689,38 @@ const routineAgentRunner = new IntelligenceAgentRunner({
   authToken: routineIntelligence.ɵgetRunnerAuthToken(),
 });
 
+/**
+ * The real postgres-mode half of the pair above, picked by mode so every headless-turn feature below
+ * — routines, responsibilities, approval-continuation, groups, proactive, wake-ups — gets a
+ * `ThreadBackend` it can actually lock and read in postgres mode, instead of the placeholder pair's
+ * dead-end URL (Phase 3: docs/brooklyn/DECISIONS.md #26). `createTurnRunner` accepts either shape
+ * (`toolkit/run-turn.ts`), so nothing past this point needs to know which mode built it.
+ *
+ * A SEPARATE instance from the one `copilot.ts`'s browser-path runtime holds, for the same reason
+ * `routineAgentRunner` above is already separate from whatever intelligence-mode client the browser
+ * path uses: both back onto the same durable store (Postgres here, the platform there), so the only
+ * cost of two instances is a missed in-process fast-path, never a missed lock.
+ */
+const headlessThreadAccess: IntelligenceLike | ThreadBackend =
+  config.runtime.mode === "postgres"
+    ? createPostgresThreadBackend(database)
+    : routineIntelligence;
+const headlessRunner: RunnerLike =
+  config.runtime.mode === "postgres"
+    // `externallyLocked`: `headlessThreadAccess` above already takes this thread's lock through
+    // `createTurnRunner`'s own `takeLease`, so this runner must not also try (Phase 3:
+    // docs/brooklyn/DECISIONS.md #28) -- two lock owners on the same thread collide, and every
+    // headless turn would fail with "Thread already running" before the agent ever ran.
+    ? new PostgresAgentRunner(database, { externallyLocked: true })
+    : routineAgentRunner;
+
 const routineRunner = createRoutineRunner({
   routineStore,
   channelStore,
   runTurn: createTurnRunner({
     admission: serverTurnAdmission,
-    intelligence: routineIntelligence,
-    runner: routineAgentRunner,
+    intelligence: headlessThreadAccess,
+    runner: headlessRunner,
     components: componentCatalog,
     buildAgentFor,
     toolsForTurn: async ({ ownerUserId, agentId, initiator }) => {
@@ -1769,8 +1801,8 @@ const copilotRuntime = mountCopilotRuntime(
 const responsibilityEngine = createServerResponsibilityEngine({
   database,
   responsibilityStore,
-  routineIntelligence,
-  routineAgentRunner,
+  routineIntelligence: headlessThreadAccess,
+  routineAgentRunner: headlessRunner,
   componentCatalog,
   buildAgentFor,
   actorFor,
@@ -1809,8 +1841,8 @@ const responsibilityAnswerTurn = ({
   });
   return createTurnRunner({
     admission: serverTurnAdmission,
-    intelligence: routineIntelligence,
-    runner: routineAgentRunner,
+    intelligence: headlessThreadAccess,
+    runner: headlessRunner,
     components: componentCatalog,
     buildAgentFor: (input) => buildAgentFor({ ...input, initiator }),
     toolsForTurn: async () => [
@@ -1884,8 +1916,8 @@ const executeApprovedAction = createApprovedActionExecutor({
 });
 const approvalContinuationRunner = createTurnRunner({
   admission: serverTurnAdmission,
-  intelligence: routineIntelligence,
-  runner: routineAgentRunner,
+  intelligence: headlessThreadAccess,
+  runner: headlessRunner,
   components: componentCatalog,
   buildAgentFor,
   toolsForTurn: async ({ ownerUserId, agentId, initiator }) =>
@@ -1916,8 +1948,8 @@ const groupConversations = createGroupConversations({
   },
   runTurn: createTurnRunner({
     admission: serverTurnAdmission,
-    intelligence: routineIntelligence,
-    runner: routineAgentRunner,
+    intelligence: headlessThreadAccess,
+    runner: headlessRunner,
     components: componentCatalog,
     buildAgentFor,
     toolsForTurn: async ({ ownerUserId, agentId, initiator }) => {
@@ -2077,8 +2109,8 @@ const proactiveEngine = createProactiveEngine({
   owner: workOwner("proactive"),
   runTurn: createTurnRunner({
     admission: serverTurnAdmission,
-    intelligence: routineIntelligence,
-    runner: routineAgentRunner,
+    intelligence: headlessThreadAccess,
+    runner: headlessRunner,
     buildAgentFor,
     // Only the run's own two tools and refusals: no computer, no components.
     toolsForTurn: (input) => proactiveEngine.toolsForTurn(input),
@@ -2151,8 +2183,8 @@ const wakeUpRunner = createWakeUpRunner({
   channels: channelStore,
   runTurn: createTurnRunner({
     admission: serverTurnAdmission,
-    intelligence: routineIntelligence,
-    runner: routineAgentRunner,
+    intelligence: headlessThreadAccess,
+    runner: headlessRunner,
     components: componentCatalog,
     buildAgentFor,
     toolsForTurn: async ({ ownerUserId, agentId, initiator }) => {

@@ -69,7 +69,7 @@ import { sanitizeSeededHistory } from "./history-sanitize";
 import type { AuditInitiator } from "./initiator";
 import { keepLease } from "./lease";
 import { TURN_LIMITS } from "./limits";
-import type { ComponentCatalog, TurnAdmission } from "./ports";
+import type { ComponentCatalog, ThreadBackend, TurnAdmission } from "./ports";
 import { historyOrEmpty } from "./thread-history";
 
 /** Everything a headless turn needs, injectable so tests never dial a model. */
@@ -364,8 +364,85 @@ type Lease = {
   release: () => Promise<void>;
 };
 
+/**
+ * What `takeLease` and `createTurnRunner`'s body actually need: thread history plus a lock, under
+ * one set of names, whichever backend is wired in. `getOrCreateThread` and `getThreadMessages` are
+ * already call-compatible between `IntelligenceLike` and `ThreadBackend` (Phase 2 deliberately shaped
+ * `ThreadBackendMessage` to match `ThreadHistoryMessage`), so only the lock methods need adapting —
+ * `IntelligenceLike`'s `ɵ`-prefixed names versus `ThreadBackend`'s `acquire`/`renew`/`release` (Phase
+ * 3: docs/brooklyn/DECISIONS.md #26).
+ */
+type ThreadAccess = {
+  getOrCreateThread(params: {
+    threadId: string;
+    userId: string;
+    agentId: string;
+    learningContainerId?: string;
+  }): Promise<void>;
+  getThreadMessages(params: {
+    threadId: string;
+    userId: string;
+  }): Promise<{ messages: ThreadHistoryMessage[] }>;
+  acquireLock(params: {
+    threadId: string;
+    runId: string;
+    userId: string;
+    agentId: string;
+    ttlSeconds: number;
+    learningContainerId?: string;
+  }): Promise<void>;
+  renewLock(params: {
+    threadId: string;
+    runId: string;
+    ttlSeconds: number;
+  }): Promise<void>;
+  releaseLock(params: { threadId: string; runId: string }): Promise<void>;
+};
+
+/**
+ * `"acquire" in intelligence` is the cheapest reliable discriminant: only `ThreadBackend` has it.
+ *
+ * `ThreadBackend.acquire` is NX and says so with its return, not a throw (`{ runId } | null` — see
+ * `ports.ts`), unlike the platform lock, which this file has never seen fail any other way than a
+ * thrown `PlatformRequestError`. Translated into a throw here so a refused lock stops the turn the
+ * same way regardless of backend: silently continuing on `null` would run a turn nobody holds the
+ * lock for, which is exactly the double-run the lock exists to prevent.
+ */
+function toThreadAccess(
+  intelligence: IntelligenceLike | ThreadBackend,
+): ThreadAccess {
+  if ("acquire" in intelligence) {
+    const backend = intelligence;
+    return {
+      getOrCreateThread: (params) => backend.getOrCreateThread(params),
+      getThreadMessages: (params) => backend.getThreadMessages(params),
+      acquireLock: async (params) => {
+        const acquired = await backend.acquire(params);
+        if (!acquired)
+          throw new Error("The thread's lock is already held by another run.");
+      },
+      renewLock: (params) => backend.renew(params),
+      releaseLock: (params) => backend.release(params),
+    };
+  }
+  const platform = intelligence;
+  return {
+    getOrCreateThread: async (params) => {
+      await platform.getOrCreateThread(params);
+    },
+    getThreadMessages: (params) => platform.getThreadMessages(params),
+    acquireLock: async (params) => {
+      await platform.ɵacquireThreadLock(params);
+    },
+    renewLock: async (params) => {
+      await platform.ɵrenewThreadLock(params);
+    },
+    releaseLock: (params) => platform.ɵcleanupThreadLock(params),
+  };
+}
+
 async function takeLease(input: {
-  intelligence: IntelligenceLike;
+  access: ThreadAccess;
   threadId: string;
   runId: string;
   userId: string;
@@ -376,7 +453,7 @@ async function takeLease(input: {
   onLost: (error: unknown) => void;
 }): Promise<Lease> {
   const {
-    intelligence,
+    access,
     threadId,
     runId,
     userId,
@@ -386,7 +463,7 @@ async function takeLease(input: {
     heartbeatMs,
     onLost,
   } = input;
-  await intelligence.ɵacquireThreadLock({
+  await access.acquireLock({
     threadId,
     runId,
     userId,
@@ -396,7 +473,7 @@ async function takeLease(input: {
   });
 
   const heartbeat = keepLease({
-    renew: () => intelligence.ɵrenewThreadLock({ threadId, runId, ttlSeconds }),
+    renew: () => access.renewLock({ threadId, runId, ttlSeconds }),
     everyMs: heartbeatMs,
     lifetimeMs: ttlSeconds * 1000,
     onLost,
@@ -405,9 +482,7 @@ async function takeLease(input: {
   return {
     stopHeartbeat: heartbeat.stop,
     release: () =>
-      intelligence
-        .ɵcleanupThreadLock({ threadId, runId })
-        .catch(() => undefined),
+      access.releaseLock({ threadId, runId }).catch(() => undefined),
   };
 }
 
@@ -539,7 +614,7 @@ async function conclude(
 }
 
 export function createTurnRunner(options: {
-  intelligence: IntelligenceLike;
+  intelligence: IntelligenceLike | ThreadBackend;
   runner: RunnerLike;
   /** Checked before anything else; see `serverTurnAdmission` in agents/turn-admission.ts. */
   admission: TurnAdmission;
@@ -588,6 +663,7 @@ export function createTurnRunner(options: {
     heartbeatMs = TURN_LIMITS.heartbeatMs,
     abortGraceMs = TURN_LIMITS.abortGraceMs,
   } = options;
+  const access = toThreadAccess(intelligence);
 
   return async ({
     ownerUserId,
@@ -642,7 +718,7 @@ export function createTurnRunner(options: {
       agentId,
       userId: ownerUserId,
     });
-    await intelligence.getOrCreateThread({
+    await access.getOrCreateThread({
       threadId,
       userId: ownerUserId,
       agentId,
@@ -662,7 +738,7 @@ export function createTurnRunner(options: {
      * between a routine that survives one interrupted chat turn and one that never fires again.
      */
     const history = await historyOrEmpty(
-      () => intelligence.getThreadMessages({ threadId, userId: ownerUserId }),
+      () => access.getThreadMessages({ threadId, userId: ownerUserId }),
       { messages: [] as ThreadHistoryMessage[] },
     );
 
@@ -797,7 +873,7 @@ export function createTurnRunner(options: {
     };
 
     const lease = await takeLease({
-      intelligence,
+      access,
       threadId,
       runId,
       userId: ownerUserId,

@@ -152,7 +152,7 @@ The outline in `INTELLIGENCE-REPLACEMENT.md` section 11 is replaced by this plan
 5. **Review panel** on `/admin/learning`: approve, edit, reject. Approve creates a numbered revision. **Nothing auto-publishes.**
 6. Delete `learning/ensure-container.ts`, `learning/auto-assign.ts`, `scripts/setup-learning.ts`, `scripts/self-hosted-learning.ts`.
 
-**Rules:** Hand-written ICM files beat a learned skill if they disagree. The analyzer needs a spend cap (monthly API budget is $15) and runs on a button or a daily schedule, never per thread.
+**Rules:** Hand-written ICM files beat a learned skill if they disagree. The analyzer runs on a schedule or a button, never per thread — never per thread is settled; which of the two, and the analyzer's own spend cap (whether it draws from the project's overall $15/month budget, Decision #9, or has a separate allowance), are still open — see Decision O6, decide in Phase 6.
 
 **Done when:** An approved candidate appears in the catalog of the next run. A rejected one never does. The analyzer stops at its cap.
 

@@ -1707,11 +1707,7 @@ const headlessThreadAccess: IntelligenceLike | ThreadBackend =
     : routineIntelligence;
 const headlessRunner: RunnerLike =
   config.runtime.mode === "postgres"
-    // `externallyLocked`: `headlessThreadAccess` above already takes this thread's lock through
-    // `createTurnRunner`'s own `takeLease`, so this runner must not also try (Phase 3:
-    // docs/brooklyn/DECISIONS.md #28) -- two lock owners on the same thread collide, and every
-    // headless turn would fail with "Thread already running" before the agent ever ran.
-    ? new PostgresAgentRunner(database, { externallyLocked: true })
+    ? new PostgresAgentRunner(database)
     : routineAgentRunner;
 
 const routineRunner = createRoutineRunner({

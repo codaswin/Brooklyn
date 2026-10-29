@@ -62,29 +62,12 @@ export class PostgresAgentRunner extends AgentRunner {
   private readonly active = new Map<string, ActiveRun>();
   /** Overridable only so a test can see a heartbeat fire without waiting out the real TTL. */
   private readonly lockHeartbeatMs: number;
-  /**
-   * True when the caller already holds this thread's lock and will release it itself — the shape
-   * `createTurnRunner` wires a headless turn through (Phase 3: docs/brooklyn/DECISIONS.md #28).
-   *
-   * Without this, two independent lock owners collide on the SAME thread: `createTurnRunner`'s own
-   * `takeLease` acquires it first (via `ThreadBackend.acquire`, outside this class entirely), and
-   * then THIS class's `runAgent` would try to acquire the very same row again below and lose --
-   * `acquire` only lets an unexpired lease be taken over, it has no case for "the caller already
-   * holds this, let it through" -- so every headless turn would fail with "Thread already running"
-   * before the agent ever ran. The browser path (`copilot.ts`) has no such outer locker, so it keeps
-   * the default: this class is the only lock owner there, exactly as Phase 2 built it.
-   */
-  private readonly externallyLocked: boolean;
 
-  constructor(
-    database: Database,
-    options: { lockHeartbeatMs?: number; externallyLocked?: boolean } = {},
-  ) {
+  constructor(database: Database, lockHeartbeatMs: number = LOCK_HEARTBEAT_MS) {
     super();
     this.database = database;
     this.threadBackend = createPostgresThreadBackend(database);
-    this.lockHeartbeatMs = options.lockHeartbeatMs ?? LOCK_HEARTBEAT_MS;
-    this.externallyLocked = options.externallyLocked ?? false;
+    this.lockHeartbeatMs = lockHeartbeatMs;
   }
 
   run(request: AgentRunnerRunRequest): Observable<BaseEvent> {
@@ -154,25 +137,23 @@ export class PostgresAgentRunner extends AgentRunner {
         userId: DEV_ACTOR.id,
         agentId: agent.agentId ?? "default",
       });
-      if (!this.externallyLocked) {
-        const acquired = await this.threadBackend.acquire({
-          threadId,
-          runId,
-          userId: DEV_ACTOR.id,
-          agentId: agent.agentId ?? "default",
-        });
-        if (!acquired) {
-          throw new Error("Thread already running");
-        }
-        heartbeat = setInterval(() => {
-          this.threadBackend.renew({ threadId, runId }).catch((error) => {
-            console.error(
-              "[PostgresAgentRunner] failed to renew the thread lock",
-              error,
-            );
-          });
-        }, this.lockHeartbeatMs);
+      const acquired = await this.threadBackend.acquire({
+        threadId,
+        runId,
+        userId: DEV_ACTOR.id,
+        agentId: agent.agentId ?? "default",
+      });
+      if (!acquired) {
+        throw new Error("Thread already running");
       }
+      heartbeat = setInterval(() => {
+        this.threadBackend.renew({ threadId, runId }).catch((error) => {
+          console.error(
+            "[PostgresAgentRunner] failed to renew the thread lock",
+            error,
+          );
+        });
+      }, this.lockHeartbeatMs);
 
       agent.threadId = threadId;
       await agent.runAgent(input as RunAgentInput, {
@@ -209,11 +190,9 @@ export class PostgresAgentRunner extends AgentRunner {
         events: compactEvents(currentEvents),
         messages: Array.isArray(agent.messages) ? [...agent.messages] : [],
       });
-      if (!this.externallyLocked) {
-        await this.threadBackend
-          .release({ threadId, runId })
-          .catch(() => {});
-      }
+      await this.threadBackend
+        .release({ threadId, runId })
+        .catch(() => {});
 
       this.active.delete(threadId);
       subject.complete();

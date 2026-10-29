@@ -126,6 +126,19 @@ describe("the lock", () => {
     ).resolves.toBeNull();
   });
 
+  test("re-acquiring with the SAME run id that already holds a live lease succeeds", async () => {
+    // Lets an external locker and a runner's own internal acquire agree on one shared run id
+    // without one losing to the other -- see docs/brooklyn/DECISIONS.md #28.
+    const id = threadId();
+    const runId = randomUUID();
+    await backend.getOrCreateThread({ threadId: id, userId, agentId });
+    await backend.acquire({ threadId: id, runId, userId, agentId });
+
+    await expect(
+      backend.acquire({ threadId: id, runId, userId, agentId }),
+    ).resolves.toEqual({ runId });
+  });
+
   test("acquiring a thread whose lease has expired succeeds, taking it over", async () => {
     const id = threadId();
     const staleRunId = randomUUID();

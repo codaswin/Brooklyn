@@ -187,7 +187,7 @@ describe("run", () => {
   test("a long-running turn's lock is renewed (heartbeat) before its lease would expire", async () => {
     // A tiny TTL-equivalent window: heartbeat every 10ms, agent runs for ~60ms, well past what a
     // single un-renewed lease would survive if the heartbeat never fired.
-    const runner = new PostgresAgentRunner(database, { lockHeartbeatMs: 10 });
+    const runner = new PostgresAgentRunner(database, 10);
     const id = threadId();
     const runId = randomUUID();
     const agent = new FakeAgent({ threadId: id });
@@ -286,25 +286,26 @@ describe("run", () => {
     warnSpy.mockRestore();
   });
 
-  describe("externallyLocked", () => {
+  describe("sharing one instance with an external locker (Phase 3: docs/brooklyn/DECISIONS.md #28)", () => {
     /*
-     * Phase 3 (docs/brooklyn/DECISIONS.md #28): `createTurnRunner` now also acquires a thread's lock
-     * itself before calling a `RunnerLike.run`, for headless turns wired to a `ThreadBackend`. Without
-     * `externallyLocked`, this runner would try to acquire the SAME thread's lock again below and
-     * lose -- `acquire` has no "the caller already holds this" case -- so every one of those turns
-     * would fail with "Thread already running" before the agent ever ran. These three tests pin down
-     * the contract that keeps the two lock owners from colliding.
+     * Ticket #22 reuses this SAME runner instance for hand-off delivery, which takes a thread's lock
+     * itself (via `ThreadBackend.acquire`, outside this class) before calling `run`, with the SAME
+     * run id this class then also acquires below -- the browser path has no such outer locker and
+     * never pre-acquires. A naive "the row is already live, refuse" rule would make this class
+     * collide with its own caller's lock every time; `acquire`'s own re-acquire-by-matching-run-id
+     * rule (`postgres-thread-backend.ts`) is what lets the two sides of one run safely agree they
+     * are the same holder, not two different ones racing.
      */
-    test("does not acquire its own lock: a run succeeds under a lock a different user id already holds", async () => {
+    test("a run succeeds when an external caller already holds this exact run id's lock", async () => {
       const id = threadId();
       const runId = randomUUID();
       const backend = createPostgresThreadBackend(database);
       await backend.getOrCreateThread({ threadId: id, userId: ownerUserId, agentId: "default" });
-      // The caller's lock, taken under the caller's own user id -- not DEV_ACTOR, which is what this
-      // class would use if it tried to acquire its own.
+      // The external caller's own acquire, under its own user id -- not DEV_ACTOR, which is what
+      // this class's internal acquire uses moments later for the SAME run id.
       await backend.acquire({ threadId: id, runId, userId: ownerUserId, agentId: "default" });
 
-      const runner = new PostgresAgentRunner(database, { externallyLocked: true });
+      const runner = new PostgresAgentRunner(database);
       const agent = new FakeAgent({ threadId: id });
       agent.events = happyPathEvents(id, runId);
 
@@ -317,31 +318,7 @@ describe("run", () => {
       );
     });
 
-    test("does not renew or release the lock: it is left exactly as the caller set it", async () => {
-      const id = threadId();
-      const runId = randomUUID();
-      const backend = createPostgresThreadBackend(database);
-      await backend.getOrCreateThread({ threadId: id, userId: ownerUserId, agentId: "default" });
-      await backend.acquire({ threadId: id, runId, userId: ownerUserId, agentId: "default" });
-      const [before] = await database
-        .select({ expiresAt: threadLocks.expiresAt, userId: threadLocks.userId })
-        .from(threadLocks)
-        .where(eq(threadLocks.threadId, id));
-
-      const runner = new PostgresAgentRunner(database, { externallyLocked: true });
-      const agent = new FakeAgent({ threadId: id });
-      agent.events = happyPathEvents(id, runId);
-      await collect(runner.run({ threadId: id, agent, input: runInput(id, runId) }));
-
-      const [after] = await database
-        .select({ expiresAt: threadLocks.expiresAt, userId: threadLocks.userId })
-        .from(threadLocks)
-        .where(eq(threadLocks.threadId, id));
-      // Still there (not released), and untouched (not renewed or taken over as DEV_ACTOR's).
-      expect(after).toEqual(before);
-    });
-
-    test("without it, a run refuses a thread whose lock somebody else already holds, even past the in-process map", async () => {
+    test("a different run id on the same thread is still refused, even past the in-process map", async () => {
       const id = threadId();
       const backend = createPostgresThreadBackend(database);
       await backend.getOrCreateThread({ threadId: id, userId: ownerUserId, agentId: "default" });

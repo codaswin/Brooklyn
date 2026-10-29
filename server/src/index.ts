@@ -2296,15 +2296,9 @@ const personResponseSweep = repeatAfterEach(
  */
 let workOfferedListener: WorkOfferedListener | undefined;
 
-// No ThreadBackend yet in postgres mode (Phase 2/3), so hand-offs are guarded off entirely there
-// -- same choice as routines (createRoutineRunner) and the thread-reader route (app.ts). Eager,
-// not lazy: startHandoffDelivery calls copilotRuntime.runnerConnection() during its own setup, so
-// this has to gate the call itself, not just what happens if a hand-off is ever attempted.
-if (
-  config.runtime.mode === "intelligence" &&
-  config.handoff.maxDepth > 0 &&
-  config.handoff.maxPerRun > 0
-) {
+// Both modes now have a real ThreadBackend/runner behind `copilotRuntime` (Phase 3, ticket #22):
+// hand-offs no longer need a mode guard, only the deployment's own on/off switch below.
+if (config.handoff.maxDepth > 0 && config.handoff.maxPerRun > 0) {
   workOfferedListener = await startHandoffDelivery({
     config,
     database,

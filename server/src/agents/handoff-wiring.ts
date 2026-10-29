@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { IntelligenceAgentRunner } from "@copilotkit/runtime/v2";
 import { workOwner } from "@openbot/shared/work-owner";
 import { eq } from "drizzle-orm";
 import { type AuditStore, handoffInitiator } from "../audit";
@@ -120,12 +119,9 @@ export async function startHandoffDelivery(deps: {
       // to its channel by the store; a scratch thread maps to none and signals nowhere.
       setBusy: (input) => channelStore.signalBusy(input.threadId, input.busy),
       newRunId: () => randomUUID(),
-      // The same address and the same token the runtime uses. Assembling either from configuration
-      // produced a runner every join was refused for, because the thread's active run is a lock the
-      // platform issues rather than something an API key can claim.
-      runner: new IntelligenceAgentRunner(
-        copilotRuntime.runnerConnection(),
-      ) as never,
+      // The runtime's own runner, exactly as it drives a person's chat turn — not a second one.
+      // See `CopilotRuntimeMount.runner`'s doc comment on why that matters for postgres mode.
+      runner: copilotRuntime.runner as never,
     }),
   });
 

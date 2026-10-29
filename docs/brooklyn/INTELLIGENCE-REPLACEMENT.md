@@ -256,10 +256,11 @@ SSE mode removes user isolation. Found in the runtime source:
 - Each approve / edit / reject is saved as Learning evidence (section 10c).
 - Raising a type to "automatic" is Aswin's decision only. The system may show approval-rate numbers to help him decide.
 
+**Resolved since:** whether the Manager may write to Content_Mind, not only read it — settled, not read-only. See `DECISIONS.md` #16: the Manager reads and writes, writes only after Aswin approves each one. `AGENT-SPEC.md` section 4 states the same.
+
 **Still open (needed for AGENT-SPEC.md):**
 1. The real `Content_writer` folder (attach it, or put it in the repo), so the format is matched exactly. I will not guess.
-2. Should the Manager only **read** Content_Mind, never write to it? (Proposed: read-only.)
-3. How Content_Mind reaches the Bots is undecided. Each Bot has its own `/workspace` volume, so the vault is not visible by default. Options: copy or sync it in, mount it, or serve it through an MCP server. Not yet checked against OpenBot. Decide in the design phase.
+2. How Content_Mind reaches the Bots is undecided. Each Bot has its own `/workspace` volume, so the vault is not visible by default. Options: copy or sync it in, mount it, or serve it through an MCP server. Not yet checked against OpenBot. Decide in the design phase.
 
 **Risk, stated plainly:** LinkedIn's terms restrict automation, as far as I know. Posting and DMs from your real profile through a bot browser can get the account limited. Mitigations to build in: daily caps per action type, human-like pacing, and a kill switch.
 

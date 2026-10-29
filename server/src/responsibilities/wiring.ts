@@ -1,5 +1,5 @@
 import { buildResponsibilityTurn } from "@openbot/shared/responsibility-turn";
-import type { ComponentCatalog } from "@openbot/toolkit/ports";
+import type { ComponentCatalog, ThreadBackend } from "@openbot/toolkit/ports";
 import {
   createTurnRunner,
   type IntelligenceLike,
@@ -40,7 +40,7 @@ import type { ResponsibilityStore } from "./types";
 export function createServerResponsibilityEngine(deps: {
   database: Database;
   responsibilityStore: ResponsibilityStore;
-  routineIntelligence: IntelligenceLike;
+  routineIntelligence: IntelligenceLike | ThreadBackend;
   routineAgentRunner: RunnerLike;
   componentCatalog: ComponentCatalog;
   buildAgentFor: Parameters<typeof createTurnRunner>[0]["buildAgentFor"];

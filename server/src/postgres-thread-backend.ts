@@ -1,5 +1,5 @@
 import { and, desc, eq, lt, or } from "drizzle-orm";
-import type { ThreadBackend } from "@openbot/toolkit/ports";
+import type { ThreadBackend, ThreadLock } from "@openbot/toolkit/ports";
 import type { Database } from "./db/client";
 import { threadLocks, threadRuns, threads } from "./db/schema";
 
@@ -107,6 +107,46 @@ export function createPostgresThreadBackend(database: Database): ThreadBackend {
         .where(
           and(eq(threadLocks.threadId, threadId), eq(threadLocks.runId, runId)),
         );
+    },
+  };
+}
+
+/**
+ * The conversation's run lock for postgres mode, as hand-off delivery needs it: creates the thread
+ * if it is new, then takes the lock, telling `onRunBusy` when a run starts and ends.
+ *
+ * One layer down from `createIntelligenceThreadLock` (`toolkit/src/copilotkit/thread-lock.ts`), and
+ * simpler: `ThreadBackend.acquire` already answers a conflict with `null` directly, so there is no
+ * exception-shaped 409 to translate, and postgres mode has no Learning container to resolve --
+ * `learning` is always `undefined` there (Phase 1).
+ */
+export function createPostgresThreadLock(options: {
+  backend: ThreadBackend;
+  onRunBusy?: (input: { threadId: string; busy: boolean }) => void;
+}): ThreadLock {
+  const { backend, onRunBusy } = options;
+  return {
+    acquire: async (input) => {
+      await backend.getOrCreateThread(input);
+      const held = await backend.acquire(input);
+      // A run started on this thread. Side effect only, never awaited: a channel showing it is
+      // working is worth nothing next to the lock the run depends on.
+      if (held) {
+        try {
+          onRunBusy?.({ threadId: input.threadId, busy: true });
+        } catch {}
+      }
+      return held;
+    },
+    renew: (input) => backend.renew(input),
+    release: async (input) => {
+      // The run on this thread is over. Told before the release lands, same as the Intelligence
+      // version, since the one thing the hand-off has already produced -- its reply -- matters more
+      // than this notification, which is best-effort either way.
+      try {
+        onRunBusy?.({ threadId: input.threadId, busy: false });
+      } catch {}
+      await backend.release(input);
     },
   };
 }

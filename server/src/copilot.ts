@@ -4,6 +4,7 @@ import type { BuiltInAgentConfiguration } from "@copilotkit/runtime/v2";
 import {
   type CopilotKitIntelligence,
   CopilotRuntime,
+  IntelligenceAgentRunner,
 } from "@copilotkit/runtime/v2";
 import { createCopilotHonoHandler } from "@copilotkit/runtime/v2/hono";
 import { PROVENANCE_GUIDANCE } from "@openbot/shared/bot-prompt";
@@ -22,6 +23,7 @@ import { HeadlessToolsMiddleware } from "@openbot/toolkit/headless-tools";
 import { sanitizeSeededHistory } from "@openbot/toolkit/history-sanitize";
 import { executeNativeApprovalTool } from "@openbot/toolkit/native-approval";
 import type { ThreadLock } from "@openbot/toolkit/ports";
+import type { RunnerLike } from "@openbot/toolkit/run-turn";
 import { historyOrEmpty } from "@openbot/toolkit/thread-history";
 import { defer, from, switchMap } from "rxjs";
 import { z } from "zod";
@@ -46,6 +48,10 @@ import type { AgentFetch, StallGuard } from "./channels/stall-guard";
 import type { DeploymentConfig } from "./config";
 import type { Database } from "./db/client";
 import { PostgresAgentRunner } from "./postgres-agent-runner";
+import {
+  createPostgresThreadBackend,
+  createPostgresThreadLock,
+} from "./postgres-thread-backend";
 import { observeModelConnection } from "./desktop-connection-failure";
 import { desktopTelemetryProperties } from "./desktop-telemetry";
 import { observeIntelligenceAuthentication } from "./intelligence-client";
@@ -102,24 +108,27 @@ type ThreadMessages = Awaited<
 /**
  * What `mountCopilotRuntime` hands back, the same shape in both modes.
  *
- * Named explicitly rather than inferred so postgres mode's stand-ins (runnerConnection, threadLock,
- * history — nothing calls them; routines and hand-offs are guarded off entirely until a real
- * ThreadBackend exists, Phase 2/3) type-check against the exact same contract intelligence mode's
- * callers already rely on, instead of silently becoming a union those callers would have to narrow.
+ * Named explicitly rather than inferred so both branches type-check against the exact same contract
+ * rather than silently becoming a union callers would have to narrow.
  */
 export type CopilotRuntimeMount = {
   handler: ReturnType<typeof createCopilotHonoHandler>;
   learning: LearningRuntime | undefined;
   /**
-   * How to reach the platform's runner, exactly as the runtime reaches it.
+   * The SAME runner instance the mounted runtime itself drives a person's chat turn through — not
+   * a second one built from connection details.
    *
-   * TAKEN FROM THE CLIENT, NOT FROM CONFIGURATION, and this is the whole of a bug that only a real
-   * gateway could show. Built from `gatewayWsUrl` and the deployment's API key, every join was
-   * refused with `active_lock_mismatch`: a thread's active run is a lock the platform issues, and
-   * the token that holds it is not the API key. The runtime asks the client for both, so anything
-   * else driving a run has to ask the same client the same way.
+   * Intelligence mode used to hand out `{url, authToken}` instead, taken from the client rather
+   * than from configuration: built from `gatewayWsUrl` and the deployment's API key, every join was
+   * refused with `active_lock_mismatch`, since a thread's active run is a lock the platform issues
+   * and the token that holds it is not the API key. A second `IntelligenceAgentRunner` built from
+   * that same pair is still safe (the platform's lock is what the gateway actually checks, not
+   * anything this object holds in-process) — but `PostgresAgentRunner` is not: its `active` map
+   * IS the in-process "already running" fast path, and a second instance per caller would fragment
+   * it. Hand-off delivery (ticket #22) is the first caller besides this mount's own runtime to need
+   * one, so the field now hands out the instance itself in both modes.
    */
-  runnerConnection: () => { url: string; authToken: string };
+  runner: RunnerLike;
   threadLock: ThreadLock;
   agentFor: (input: {
     actor: AgentActor;
@@ -1787,14 +1796,19 @@ export function mountCopilotRuntime(
 
   if (config.runtime.mode === "postgres") {
     /*
-     * No Intelligence gateway to drive the chat through: the runtime runs on
-     * PostgresAgentRunner instead (Phase 2: docs/brooklyn/PLAN.md), which replaces Phase 1's
-     * temporary InMemoryAgentRunner. Not passing `channels` or the learning hook here is
-     * deliberate — the runtime throws if either is set without `intelligence`.
+     * No Intelligence gateway to drive the chat through: the runtime runs on PostgresAgentRunner
+     * instead (Phase 2: docs/brooklyn/PLAN.md), which replaces Phase 1's temporary
+     * InMemoryAgentRunner. Not passing `channels` or the learning hook here is deliberate — the
+     * runtime throws if either is set without `intelligence`.
+     *
+     * ONE INSTANCE, handed to the runtime AND out through `runner` below — not a second one. See
+     * the field's own doc comment on `CopilotRuntimeMount`.
      */
+    const postgresRunner = new PostgresAgentRunner(database);
+    const threadAccess = createPostgresThreadBackend(database);
     const runtime = new CopilotRuntime({
       identifyUser,
-      runner: new PostgresAgentRunner(database),
+      runner: postgresRunner,
       telemetryProperties: {
         ...(config.accessibility ? { accessibility_title: "OpenBot" } : {}),
         ...desktopTelemetryProperties(),
@@ -1803,28 +1817,20 @@ export function mountCopilotRuntime(
       a2ui: { enabled: config.generativeUi },
       agents: createRequestAgents(identifyActor, resolver) as never,
     });
-    /*
-     * routines and hand-offs never call these in postgres mode — both are guarded off entirely
-     * (index.ts, handoff-wiring.ts) until a real ThreadBackend exists. Thrown rather than faked, so
-     * a guard that slips would fail loudly instead of acting on made-up history or a lock nobody
-     * holds.
-     */
-    const notWiredUpYet = (): never => {
-      throw new Error(
-        "Routines and hand-offs are not wired up in postgres mode yet (Phase 1) — see docs/brooklyn/PLAN.md.",
-      );
-    };
     return {
       handler: createCopilotHonoHandler({ runtime, basePath }),
       learning: undefined,
-      runnerConnection: notWiredUpYet,
-      threadLock: {
-        acquire: notWiredUpYet,
-        renew: notWiredUpYet,
-        release: notWiredUpYet,
-      },
+      runner: postgresRunner,
+      threadLock: createPostgresThreadLock({ backend: threadAccess, onRunBusy }),
       agentFor,
-      history: notWiredUpYet,
+      /** A thread's messages, as the postgres backend holds them. */
+      history: async (input: { threadId: string; actorId: string }) => {
+        const read = await threadAccess.getThreadMessages({
+          threadId: input.threadId,
+          userId: input.actorId,
+        });
+        return read.messages as ThreadMessages;
+      },
     };
   }
 
@@ -1914,12 +1920,15 @@ export function mountCopilotRuntime(
      * How to reach the platform's runner, exactly as the runtime reaches it.
      *
      * TAKEN FROM THE CLIENT, NOT FROM CONFIGURATION, and this is the whole of a bug that only a real
-     * gateway could show. Built from `gatewayWsUrl` and the deployment's API key, every join was
-     * refused with `active_lock_mismatch`: a thread's active run is a lock the platform issues, and
-     * the token that holds it is not the API key. The runtime asks the client for both, so anything
-     * else driving a run has to ask the same client the same way.
+     * gateway could show: built from `gatewayWsUrl` and the deployment's API key, every join was
+     * refused with `active_lock_mismatch`, since a thread's active run is a lock the platform
+     * issues and the token that holds it is not the API key. A second `IntelligenceAgentRunner`
+     * built from the same connection pair is safe — the lock the gateway checks lives on the
+     * platform, not in this object — so handing out the instance here (rather than the connection
+     * details, as this used to) costs nothing extra for this mode and matches postgres mode's
+     * contract exactly.
      */
-    runnerConnection: () => ({
+    runner: new IntelligenceAgentRunner({
       url: intelligenceClient.ɵgetRunnerWsUrl(),
       authToken: intelligenceClient.ɵgetRunnerAuthToken(),
     }),

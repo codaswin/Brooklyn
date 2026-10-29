@@ -1,6 +1,6 @@
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { FIRING_FRAME, frameFiring } from "@openbot/shared/routine-firing";
 import { createAgentProfileStore } from "../src/agents/profile-store";
 import type { AgentActor } from "../src/agents/profile-types";
@@ -20,9 +20,11 @@ import {
   channelMemberships,
   channels,
   intelligenceChannelMappings,
+  threadRuns,
   users,
   workItems,
 } from "../src/db/schema";
+import { createPostgresThreadBackend } from "../src/postgres-thread-backend";
 import { createWorkQueue } from "../src/work/queue";
 import { TEST_POOL, testDatabaseUrl } from "./support/database";
 
@@ -519,5 +521,53 @@ describe("naming a claimed conversation", () => {
     // The quotes a model wraps a title in, the newline, and the run of spaces all go: a roster row
     // is one line of plain text.
     expect((await summaryOf(channel.id))?.summary).toBe("Travel receipt rules");
+  });
+
+  /*
+   * Every other test above hands `transcript` a hand-written fake. `ThreadTranscript` is narrow
+   * enough that the real postgres-mode `ThreadBackend` satisfies it too (Phase 3, ticket #23) — this
+   * is the one test that proves a SEEDED thread's own messages, not a fake's, are what the title
+   * actually comes from.
+   */
+  test("names a channel from a seeded thread's real messages, read through ThreadBackend", async () => {
+    const owner = await createUser();
+    const channel = await createUsedChannel(owner);
+    const [mapping] = await database
+      .select({ threadId: intelligenceChannelMappings.threadId })
+      .from(intelligenceChannelMappings)
+      .where(
+        and(
+          eq(intelligenceChannelMappings.channelId, channel.id),
+          eq(intelligenceChannelMappings.userId, owner.id),
+        ),
+      );
+    const threadId = mapping?.threadId;
+    if (!threadId) throw new Error("the used channel has no thread mapping");
+
+    const backend = createPostgresThreadBackend(database);
+    await backend.getOrCreateThread({ threadId, userId: owner.id, agentId: "default" });
+    await database.insert(threadRuns).values({
+      threadId,
+      runId: randomUUID(),
+      agentId: "default",
+      events: [],
+      messages: [
+        { id: "u1", role: "user", content: "Which flight?" },
+        { id: "a1", role: "assistant", content: "The 2am one." },
+      ],
+    });
+    await offer(channel.id);
+
+    await summariseClaimedChannels(
+      options({
+        transcript: backend,
+        // Echoes exactly what the real backend's read produced, so the final summary reveals it.
+        title: async (excerpt) => excerpt,
+      }),
+    );
+
+    expect((await summaryOf(channel.id))?.summary).toBe(
+      "Asked: Which flight? Answered: The 2am one.",
+    );
   });
 });

@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { createDatabase } from "../src/db/client";
-import { threadLocks, threads, users } from "../src/db/schema";
+import { threadLocks, threadRuns, threads, users } from "../src/db/schema";
 import { createPostgresThreadBackend } from "../src/postgres-thread-backend";
 import { TEST_POOL, testDatabaseUrl } from "./support/database";
 
@@ -92,6 +92,31 @@ describe("getThreadMessages", () => {
     await expect(
       backend.getThreadMessages({ threadId: threadId(), userId }),
     ).resolves.toEqual({ messages: [] });
+  });
+
+  /*
+   * Delivery-channel history reads through this exact method with this exact shape (`index.ts`'s
+   * `delivery.authenticated.history`), no transformation of its own -- so this is that seam's own
+   * test too (Phase 3, ticket #23), not only this file's.
+   */
+  test("returns a seeded thread's own messages, not just an empty shape", async () => {
+    const id = threadId();
+    await backend.getOrCreateThread({ threadId: id, userId, agentId });
+    const seeded = [
+      { id: "u1", role: "user", content: "What's the outage window?" },
+      { id: "a1", role: "assistant", content: "2am to 4am." },
+    ];
+    await database.insert(threadRuns).values({
+      threadId: id,
+      runId: randomUUID(),
+      agentId,
+      events: [],
+      messages: seeded,
+    });
+
+    await expect(
+      backend.getThreadMessages({ threadId: id, userId }),
+    ).resolves.toEqual({ messages: seeded });
   });
 });
 

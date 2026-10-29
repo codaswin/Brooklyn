@@ -2359,7 +2359,7 @@ repeatAfterEach(
 const channelSummaries = {
   database,
   queue: createWorkQueue(database),
-  transcript: routineIntelligence,
+  transcript: headlessThreadAccess,
   title: createChannelTitler({
     model: runtimeModel.defaultModel,
     resolveApiKey: resolveRuntimeModelApiKey,
@@ -2591,7 +2591,7 @@ const app = createApp(
         listConversations: async (owner, cursor) =>
           channelStore.list(await actorFor(owner), { cursor, limit: 100 }),
         history: (scope) =>
-          routineIntelligence.getThreadMessages({
+          headlessThreadAccess.getThreadMessages({
             threadId: scope.threadId,
             userId: scope.ownerUserId,
           }),

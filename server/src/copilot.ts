@@ -4,7 +4,6 @@ import type { BuiltInAgentConfiguration } from "@copilotkit/runtime/v2";
 import {
   type CopilotKitIntelligence,
   CopilotRuntime,
-  InMemoryAgentRunner,
 } from "@copilotkit/runtime/v2";
 import { createCopilotHonoHandler } from "@copilotkit/runtime/v2/hono";
 import { PROVENANCE_GUIDANCE } from "@openbot/shared/bot-prompt";
@@ -45,6 +44,8 @@ import {
 } from "./channels/attachment-parts";
 import type { AgentFetch, StallGuard } from "./channels/stall-guard";
 import type { DeploymentConfig } from "./config";
+import type { Database } from "./db/client";
+import { PostgresAgentRunner } from "./postgres-agent-runner";
 import { observeModelConnection } from "./desktop-connection-failure";
 import { desktopTelemetryProperties } from "./desktop-telemetry";
 import { observeIntelligenceAuthentication } from "./intelligence-client";
@@ -1739,6 +1740,7 @@ export function createRequestAgents(
  */
 export function mountCopilotRuntime(
   config: DeploymentConfig,
+  database: Database,
   resolver: ActorAgentResolver,
   identifyUser: IdentifyUser,
   identifyActor: IdentifyActor,
@@ -1785,14 +1787,14 @@ export function mountCopilotRuntime(
 
   if (config.runtime.mode === "postgres") {
     /*
-     * No Intelligence gateway to drive the chat through: the runtime runs on the SDK's own
-     * InMemoryAgentRunner instead (Phase 1; Phase 2 swaps it for a Postgres-backed one). Not
-     * passing `channels` or the learning hook here is deliberate — the runtime throws if either is
-     * set without `intelligence`.
+     * No Intelligence gateway to drive the chat through: the runtime runs on
+     * PostgresAgentRunner instead (Phase 2: docs/brooklyn/PLAN.md), which replaces Phase 1's
+     * temporary InMemoryAgentRunner. Not passing `channels` or the learning hook here is
+     * deliberate — the runtime throws if either is set without `intelligence`.
      */
     const runtime = new CopilotRuntime({
       identifyUser,
-      runner: new InMemoryAgentRunner(),
+      runner: new PostgresAgentRunner(database),
       telemetryProperties: {
         ...(config.accessibility ? { accessibility_title: "OpenBot" } : {}),
         ...desktopTelemetryProperties(),

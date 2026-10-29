@@ -1754,6 +1754,7 @@ const actorAgentResolver = createActorAgentResolver({
 
 const copilotRuntime = mountCopilotRuntime(
   config,
+  database,
   actorAgentResolver,
   identifyUser,
   identifyActor,

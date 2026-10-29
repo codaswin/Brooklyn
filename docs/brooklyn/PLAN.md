@@ -118,7 +118,7 @@ The outline in `INTELLIGENCE-REPLACEMENT.md` section 11 is replaced by this plan
 
 **Goal:** The UI behaves in the new mode. This part is **untested so far**.
 
-**Manual checklist (Aswin runs it):** new channel; send; reload mid-reply (it reconnects and keeps following); Stop button; restart server then reopen the chat; group chat with 2 Bots; direct `/bot` chat; the "does this thread still exist" check (`server/src/channels/thread-routes.ts`, backed by `ThreadBackend.getThread`); memory page. Also open the browser network panel: **no calls to any CopilotKit-hosted address.**
+**Manual checklist (Aswin runs it):** new channel; send; reload mid-reply (it reconnects and keeps following); Stop button; restart server then reopen the chat; group chat with 2 Bots; direct `/bot` chat; the "does this thread still exist" check (`server/src/channels/thread-routes.ts`, backed by `ThreadBackend.getThread`); memory page. A responsibility firing and a proactive suggestion/wake-up landing correctly (Phase 3 fixes the shared mechanism these run on, but adds no automated coverage for these two — see `docs/brooklyn/DECISIONS.md` #26). Also open the browser network panel: **no calls to any CopilotKit-hosted address.**
 
 **Likely files:** `app/src/lib/copilot/bot-thread.ts`, `app/src/lib/copilot/provider.tsx`, `app/src/routes/_authed/_app/bot.tsx`.
 

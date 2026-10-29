@@ -4,8 +4,14 @@ import { createActorAgentResolver } from "../src/agents/agent-resolver";
 import { createStallGuard } from "../src/channels/stall-guard";
 import { loadConfig } from "../src/config";
 import { mountCopilotRuntime } from "../src/copilot";
+import { createDatabase } from "../src/db/client";
 import { createLearningSettingsStore } from "../src/learning/settings";
 import { testEnvironment } from "./support/environment";
+import { TEST_POOL, testDatabaseUrl } from "./support/database";
+
+// Intelligence mode never touches this (postgres mode's own runner does) -- required only to
+// satisfy mountCopilotRuntime's signature.
+const database = createDatabase(testDatabaseUrl(), TEST_POOL);
 
 test("delegation creates its scratch Thread with the addressed Bot's Learning assignment before locking", async () => {
   const order: string[] = [];
@@ -49,6 +55,7 @@ test("delegation creates its scratch Thread with the addressed Bot's Learning as
     });
     const runtime = mountCopilotRuntime(
       loadConfig(testEnvironment()),
+      database,
       createActorAgentResolver({
         model: { provider: "openai", defaultModel: "unused" },
         loadAgents: async () => [],

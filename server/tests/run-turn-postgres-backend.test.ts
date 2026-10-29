@@ -221,12 +221,14 @@ describe("createTurnRunner against a real postgres ThreadBackend", () => {
 describe("createTurnRunner wired to the real PostgresAgentRunner, exactly as index.ts pairs them", () => {
   /*
    * `PostgresAgentRunner` manages its OWN lock internally (needed for the browser path, which has no
-   * outer locker). `createTurnRunner` ALSO now takes a thread's lock itself via `access`. Pairing the
-   * two without `externallyLocked: true` on the runner makes them collide on the same thread -- this
-   * was caught in review before it shipped (Phase 3: docs/brooklyn/DECISIONS.md #28) -- so both sides
-   * of that contract are pinned down here, against the real runner, not a fake one.
+   * outer locker). `createTurnRunner` ALSO now takes a thread's lock itself via `access`, with the
+   * SAME run id it then hands to `runner.run`. That pairing only works because `acquire`'s own
+   * re-acquire-by-matching-run-id rule (`postgres-thread-backend.ts`) lets the two agree they are the
+   * same holder rather than lose to each other -- caught in review before it shipped, since ticket
+   * #22 reuses this one instance for hand-off delivery too, not a second one per caller (Phase 3:
+   * docs/brooklyn/DECISIONS.md #28). Proven here against the real runner, not a fake one.
    */
-  test("externally locked: the pairing completes a turn rather than colliding on the same lock", async () => {
+  test("completes a turn without the runner's own internal acquire colliding with the lock createTurnRunner already took", async () => {
     const id = threadId();
     const runId = randomUUID();
     const agent = new RealEventAgent({ agentId: AGENT_ID });
@@ -234,7 +236,7 @@ describe("createTurnRunner wired to the real PostgresAgentRunner, exactly as ind
     const runTurn = createTurnRunner({
       admission: serverTurnAdmission,
       intelligence: access,
-      runner: new PostgresAgentRunner(database, { externallyLocked: true }),
+      runner: new PostgresAgentRunner(database),
       buildAgentFor: async () => agent,
     });
 
@@ -248,7 +250,7 @@ describe("createTurnRunner wired to the real PostgresAgentRunner, exactly as ind
     });
 
     expect(result.replyText).toBe("All set.");
-    // createTurnRunner's own release ran, and the runner did not also try to release underneath it.
+    // Released on every side: a fresh run id can take the lock straight away.
     await expect(
       access.acquire({
         threadId: id,
@@ -257,31 +259,5 @@ describe("createTurnRunner wired to the real PostgresAgentRunner, exactly as ind
         agentId: AGENT_ID,
       }),
     ).resolves.not.toBeNull();
-  });
-
-  test("without it, the pairing reproduces the collision: the turn fails with the runner's own lock refusal", async () => {
-    const id = threadId();
-    const runId = randomUUID();
-    const agent = new RealEventAgent({ agentId: AGENT_ID });
-    agent.events = happyPathEvents(id, runId);
-    const runTurn = createTurnRunner({
-      admission: serverTurnAdmission,
-      intelligence: access,
-      // The misconfiguration: omitting `externallyLocked`, so this runner also tries to take the
-      // lock `access` already holds for this same run.
-      runner: new PostgresAgentRunner(database),
-      buildAgentFor: async () => agent,
-    });
-
-    await expect(
-      runTurn({
-        ownerUserId: OWNER,
-        routineId: "routine_real_runner_misconfigured",
-        agentId: AGENT_ID,
-        threadId: id,
-        instruction: "Say something.",
-        runId,
-      }),
-    ).rejects.toThrow("Thread already running");
   });
 });

@@ -1,4 +1,4 @@
-import { and, desc, eq, lt } from "drizzle-orm";
+import { and, desc, eq, lt, or } from "drizzle-orm";
 import type { ThreadBackend } from "@openbot/toolkit/ports";
 import type { Database } from "./db/client";
 import { threadLocks, threadRuns, threads } from "./db/schema";
@@ -63,9 +63,21 @@ export function createPostgresThreadBackend(database: Database): ThreadBackend {
         .values({ threadId, runId, userId, agentId, expiresAt })
         .onConflictDoUpdate({
           target: threadLocks.threadId,
-          // Only take over a lease that has already expired -- an unexpired one is left alone,
-          // which is what makes a second concurrent run refused rather than silently superseded.
-          setWhere: lt(threadLocks.expiresAt, new Date()),
+          /*
+           * Take over a lease that has already expired -- an unexpired one held by a DIFFERENT run
+           * id is left alone, which is what makes a second concurrent run refused rather than
+           * silently superseded. The other half, matching this exact run id, is a RE-acquire by the
+           * same holder, not a second run: `runId` is minted once per logical run and never reused,
+           * so two acquires carrying it are always the same run asking twice, never two different
+           * ones racing. This is what lets an external locker (`createTurnRunner`'s `takeLease` for a
+           * headless turn, or hand-off delivery's own lock) and `PostgresAgentRunner`'s internal
+           * acquire agree on ONE shared instance without one of them losing to the other
+           * (Phase 3: docs/brooklyn/DECISIONS.md #28).
+           */
+          setWhere: or(
+            lt(threadLocks.expiresAt, new Date()),
+            eq(threadLocks.runId, runId),
+          ),
           set: { runId, userId, agentId, expiresAt },
         })
         .returning({ runId: threadLocks.runId });

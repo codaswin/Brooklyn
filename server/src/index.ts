@@ -724,6 +724,19 @@ const routineIntelligence = observeIntelligenceAuthentication(
         },
   ),
 );
+
+/**
+ * The real postgres-mode thread reader, picked by mode. Declared here, right after
+ * `routineIntelligence`, rather than beside `headlessRunner` below (which needs `routineAgentRunner`
+ * and so can't exist this early) — `approvalService`'s saved-tool-call check needs a real read in
+ * postgres mode too (Phase 3, ticket #28: docs/brooklyn/DECISIONS.md #30), and it is built long
+ * before `routineAgentRunner` does. Every later `createTurnRunner`/hand-off user of this same value
+ * reads it from here unchanged.
+ */
+const headlessThreadAccess: IntelligenceLike | ThreadBackend =
+  config.runtime.mode === "postgres"
+    ? createPostgresThreadBackend(database)
+    : routineIntelligence;
 const approvalComputerTools = async (
   ownerUserId: string,
   agentId: string,
@@ -753,7 +766,7 @@ const approvalService = createServerApprovalService({
   actorFor,
   database,
   authoriseQuestion,
-  routineIntelligence,
+  routineIntelligence: headlessThreadAccess,
   approvalComputerTools,
   review: (prompt, signal) => chooseSkills(prompt, signal),
   // Assigned further down, once delivery is wired.
@@ -1690,21 +1703,20 @@ const routineAgentRunner = new IntelligenceAgentRunner({
 });
 
 /**
- * The real postgres-mode half of the pair above, picked by mode so every headless-turn feature below
- * — routines, responsibilities, approval-continuation, groups, proactive, wake-ups — gets a
- * `ThreadBackend` it can actually lock and read in postgres mode, instead of the placeholder pair's
- * dead-end URL (Phase 3: docs/brooklyn/DECISIONS.md #26). `createTurnRunner` accepts either shape
- * (`toolkit/run-turn.ts`), so nothing past this point needs to know which mode built it.
+ * The real postgres-mode half of the pair above: `headlessThreadAccess` (declared earlier, right
+ * after `routineIntelligence` -- `approvalService` needs it too, and that is built long before
+ * `routineAgentRunner` exists) gets its runner counterpart here, once `routineAgentRunner` itself
+ * exists. Picked by mode so every headless-turn feature below — routines, responsibilities,
+ * approval-continuation, groups, proactive, wake-ups — gets a `PostgresAgentRunner` it can actually
+ * run turns through in postgres mode, instead of the placeholder pair's dead-end URL (Phase 3:
+ * docs/brooklyn/DECISIONS.md #26). `createTurnRunner` accepts either shape (`toolkit/run-turn.ts`),
+ * so nothing past this point needs to know which mode built it.
  *
  * A SEPARATE instance from the one `copilot.ts`'s browser-path runtime holds, for the same reason
  * `routineAgentRunner` above is already separate from whatever intelligence-mode client the browser
  * path uses: both back onto the same durable store (Postgres here, the platform there), so the only
  * cost of two instances is a missed in-process fast-path, never a missed lock.
  */
-const headlessThreadAccess: IntelligenceLike | ThreadBackend =
-  config.runtime.mode === "postgres"
-    ? createPostgresThreadBackend(database)
-    : routineIntelligence;
 const headlessRunner: RunnerLike =
   config.runtime.mode === "postgres"
     ? new PostgresAgentRunner(database)

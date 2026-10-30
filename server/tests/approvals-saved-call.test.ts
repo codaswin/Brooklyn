@@ -1,5 +1,11 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { savedToolCall } from "../src/approvals/wiring";
+import { createDatabase } from "../src/db/client";
+import { threadRuns, users } from "../src/db/schema";
+import { createPostgresThreadBackend } from "../src/postgres-thread-backend";
+import { TEST_POOL, testDatabaseUrl } from "./support/database";
 
 // What the browser asks to run: the Bot's click, as the live stream delivered it whole.
 const snapshot = {
@@ -77,5 +83,68 @@ describe("the saved copy of a call the browser is about to run", () => {
         noWait,
       ),
     ).toEqual({ matches: true, answered: true });
+  });
+});
+
+/*
+ * Every test above reads from a hand-written fake. `createServerApprovalService`'s own resume path
+ * calls `savedToolCall` with a `read` backed by `ThreadReader` (`IntelligenceLike` or `ThreadBackend`
+ * — Phase 3, ticket #28: docs/brooklyn/DECISIONS.md #30), so this is the one test confirming a real
+ * postgres-mode thread's seeded tool call is found and matched, not just a fake's.
+ */
+describe("the saved copy of a call, read through the real postgres ThreadBackend", () => {
+  const database = createDatabase(testDatabaseUrl(), TEST_POOL);
+  const backend = createPostgresThreadBackend(database);
+  const userId = `approvals_saved_call_user_${randomUUID().slice(0, 8)}`;
+  let ownsUserFixture = false;
+
+  beforeAll(async () => {
+    const [existing] = await database
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+    if (existing) return;
+    ownsUserFixture = true;
+    await database
+      .insert(users)
+      .values({ id: userId, email: `${userId}@openbot.test` });
+  });
+
+  afterAll(async () => {
+    if (!ownsUserFixture) return;
+    await database.delete(users).where(eq(users.id, userId));
+  });
+
+  test("matches a tool call seeded as a real run, and reports it unanswered", async () => {
+    const threadId = `approvals_saved_call_thread_${randomUUID()}`;
+    await backend.getOrCreateThread({ threadId, userId, agentId: "default" });
+    await database.insert(threadRuns).values({
+      threadId,
+      runId: randomUUID(),
+      agentId: "default",
+      events: [],
+      messages: [
+        {
+          id: "a1",
+          role: "assistant",
+          toolCalls: [
+            {
+              id: snapshot.toolCallId,
+              name: snapshot.toolName,
+              args: JSON.stringify(snapshot.args),
+            },
+          ],
+        },
+      ],
+    });
+
+    const saved = await savedToolCall(
+      () => backend.getThreadMessages({ threadId, userId }),
+      snapshot,
+      noWait,
+    );
+
+    expect(saved).toEqual({ matches: true, answered: false });
   });
 });

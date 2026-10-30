@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import type { HeadlessTool } from "@openbot/toolkit/headless-tools";
+import type { ThreadBackend } from "@openbot/toolkit/ports";
 import type { IntelligenceLike } from "@openbot/toolkit/run-turn";
 import { type RunAssertion, readRunAssertion } from "../agents/callback-token";
 import type { AgentProfileStore } from "../agents/profile-store";
@@ -13,9 +14,16 @@ import { createApprovalQuestions, type PersonQuestion } from "./questions";
 import { createApprovalService } from "./service";
 import { ApprovalRefusedError, type ApprovalStore } from "./types";
 
-type ThreadHistory = Awaited<
-  ReturnType<Pick<IntelligenceLike, "getThreadMessages">["getThreadMessages"]>
->;
+/**
+ * Narrowed to one method, same as `ThreadTranscript` in `channels/summary.ts` -- and, as there,
+ * `ThreadBackend`'s `getThreadMessages` satisfies it exactly as `IntelligenceLike`'s does (Phase 3,
+ * ticket #28 — `docs/brooklyn/DECISIONS.md` #30 flagged this as the one site ticket #23 left behind).
+ */
+type ThreadReader =
+  | Pick<IntelligenceLike, "getThreadMessages">
+  | Pick<ThreadBackend, "getThreadMessages">;
+
+type ThreadHistory = Awaited<ReturnType<ThreadReader["getThreadMessages"]>>;
 
 /**
  * The saved copy of the call the browser is about to run, read back from the conversation.
@@ -77,7 +85,7 @@ export function createServerApprovalService(deps: {
   actorFor: (ownerUserId: string) => Promise<AgentActor>;
   database: Database;
   authoriseQuestion: (question: PersonQuestion) => Promise<void>;
-  routineIntelligence: Pick<IntelligenceLike, "getThreadMessages">;
+  routineIntelligence: ThreadReader;
   approvalComputerTools: (
     ownerUserId: string,
     agentId: string,
